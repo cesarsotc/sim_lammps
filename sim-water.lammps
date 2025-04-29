@@ -1,0 +1,100 @@
+# Meniscus formation between a SiO2 tip and a SiO2 substrate in water (short-range electrostatics, thermal cooling)
+
+# --- Initialization ---
+units real
+boundary p p p
+atom_style full
+bond_style harmonic
+angle_style harmonic
+pair_style hybrid/overlay tersoff lj/cut/coul/cut 8.0 8.0  # Corto alcance
+# kspace_style eliminado ya que no se usa coul/long
+
+# --- System definition ---
+read_data sio2-tip-substrate-water_modified.data
+
+# --- Groups ---
+group tip type 1 2        # OU, SiU
+group substrate type 3 4  # SiL, OL
+group water type 5 6      # OW, HW (water)
+
+# --- Pair Coefficients ---
+
+# Tersoff potential for Si-O interactions
+pair_coeff * * tersoff SiO.tersoff O Si Si O NULL NULL
+
+# Charges
+set type 1 charge -1.2
+set type 2 charge +2.4
+set type 3 charge +2.4
+set type 4 charge -1.2
+set type 5 charge -0.834
+set type 6 charge 0.417
+
+# TIP3P water (short-range electrostatics)
+pair_coeff 5 5 lj/cut/coul/cut 0.102 3.1588
+pair_coeff 6 6 lj/cut/coul/cut 0.0 0.0
+pair_coeff 5 6 lj/cut/coul/cut 0.0 0.0
+
+# Silanol-water hydrogen bonding
+pair_coeff 1 6 lj/cut/coul/cut 0.15 2.60  # OU-HW
+pair_coeff 1 5 lj/cut/coul/cut 0.2 3.20   # OU-OW
+
+# Tip-water interactions
+pair_coeff 2 5 lj/cut/coul/cut 0.125 3.5
+pair_coeff 2 6 lj/cut/coul/cut 0.0 0.0
+
+# Substrate-water hydrogen bonding
+pair_coeff 4 6 lj/cut/coul/cut 0.15 2.60  # OL-HW
+pair_coeff 4 5 lj/cut/coul/cut 0.2 3.20   # OL-OW
+
+# Substrate-water interactions
+pair_coeff 3 5 lj/cut/coul/cut 0.125 3.5
+pair_coeff 3 6 lj/cut/coul/cut 0.0 0.0
+
+# --- Bond and Angle Parameters for TIP3P Water ---
+bond_coeff 1 450.0 0.9572
+angle_coeff 1 55.0 104.52
+
+# --- Simulation Settings ---
+timestep 0.5
+neighbor 4.0 bin
+neigh_modify delay 10 every 2 check yes
+
+# Fix positions of substrate and restrict tip to z
+fix fix_substrate substrate setforce 0.0 0.0 0.0
+fix fix_tip tip setforce 0.0 0.0 NULL
+
+# SHAKE fix with tighter tolerance
+fix shake water shake 0.00001 50 0 b 1 a 1
+
+# --- Energy Minimization ---
+thermo 10
+thermo_style custom step temp pe ke etotal press
+
+minimize 1.0e-4 1.0e-6 1000 10000
+run 0
+minimize 1.0e-6 1.0e-8 10000 100000
+
+# --- Initial Velocities ---
+velocity water create 400.0 12345 dist gaussian
+
+# --- Visualization Output ---
+dump vis all atom 100 water_meniscus_evolution.lammpstrj
+dump_modify vis sort id
+
+# --- Thermal Relaxation / Cooling ---
+
+# Stage 1: From 400K to 300K
+fix nvt1 water nvt temp 400.0 300.0 100.0
+run 100000
+unfix nvt1
+write_data state_100k.lammps
+
+# Stage 2: From 300K to 200K
+fix nvt2 water nvt temp 300.0 200.0 100.0
+run 100000
+unfix nvt2
+
+# --- Final Configuration ---
+write_data final_meniscus.lammps
+undump vis
