@@ -1,0 +1,152 @@
+# Corrected LAMMPS script for SiO2 melting using control volume analysis
+# Monitor atom count in central region to detect fusion temperature
+
+units           metal
+dimension       3
+boundary        p p p
+atom_style      atomic
+
+# Read data file
+read_data       sio2.data
+
+# Tersoff potential for SiO2
+pair_style      tersoff
+pair_coeff      * * SiO.tersoff Si O
+
+# Set masses
+mass            1 28.0855  # Si
+mass            2 15.9994  # O
+
+# Neighbor settings
+neighbor        2.0 bin
+neigh_modify    every 10 delay 0 check yes
+
+# Get simulation box dimensions
+variable        xbox equal lx
+variable        ybox equal ly
+variable        zbox equal lz
+
+print           "Simulation box dimensions:"
+print           "X: 0 to ${xbox}"
+print           "Y: 0 to ${ybox}"
+print           "Z: 0 to ${zbox}"
+
+# Define control volume in the center of the simulation box
+# Control volume dimensions (25% of box size to avoid boundary effects)
+variable        cv_frac equal 0.25
+variable        cv_size_x equal ${xbox}*${cv_frac}
+variable        cv_size_y equal ${ybox}*${cv_frac}
+variable        cv_size_z equal ${zbox}*${cv_frac}
+
+# Control volume boundaries (centered)
+variable        cv_xlo equal ${xbox}/2.0-${cv_size_x}/2.0
+variable        cv_xhi equal ${xbox}/2.0+${cv_size_x}/2.0
+variable        cv_ylo equal ${ybox}/2.0-${cv_size_y}/2.0
+variable        cv_yhi equal ${ybox}/2.0+${cv_size_y}/2.0
+variable        cv_zlo equal ${zbox}/2.0-${cv_size_z}/2.0
+variable        cv_zhi equal ${zbox}/2.0+${cv_size_z}/2.0
+
+print           "Control volume boundaries:"
+print           "X: ${cv_xlo} to ${cv_xhi}"
+print           "Y: ${cv_ylo} to ${cv_yhi}"  
+print           "Z: ${cv_zlo} to ${cv_zhi}"
+
+# Calculate control volume
+variable        cv_volume equal ${cv_size_x}*${cv_size_y}*${cv_size_z}
+print           "Control volume: ${cv_volume} "
+
+# Define atom type groups first (needed for intersect)
+group           silicon type 1
+group           oxygen type 2
+
+# Create region and dynamic group for control volume
+region          control_vol block ${cv_xlo} ${cv_xhi} ${cv_ylo} ${cv_yhi} ${cv_zlo} ${cv_zhi}
+group           cv_atoms dynamic all region control_vol every 100
+
+# Count atoms by type in control volume using compute property/atom
+compute         cv_mass_per_atom cv_atoms property/atom mass
+compute         cv_total_mass cv_atoms reduce sum c_cv_mass_per_atom
+
+# Count Si and O separately using dynamic groups
+group           cv_si dynamic silicon region control_vol every 100
+group           cv_o dynamic oxygen region control_vol every 100
+
+# Count atoms in each group
+variable        cv_count_si equal count(cv_si)
+variable        cv_count_o equal count(cv_o)
+variable        cv_natoms equal count(cv_atoms)
+
+# Simple atom counting using variables with count() function
+# This is the most reliable method for counting atoms in dynamic groups
+
+# Calculate density using total mass
+variable        cv_density equal c_cv_total_mass/${cv_volume}
+
+# Temperature computes
+compute         cv_temp cv_atoms temp
+compute         total_temp all temp
+
+# Total potential energy
+compute         total_pe all pe
+
+# Thermodynamic output - using variables for atom counts
+thermo_style    custom step temp press vol density etotal epair v_cv_natoms v_cv_count_si v_cv_count_o v_cv_density c_cv_temp
+thermo          100
+
+# Initial minimization
+print           "Starting minimization..."
+minimize        1e-4 1e-6 1000 10000
+
+# Initial equilibration at 300K
+print           "Initial equilibration at 300K..."
+timestep        0.001
+fix             init_equil all nvt temp 300.0 300.0 0.1
+run             5000
+unfix           init_equil
+
+# Check initial control volume state
+print           "Initial control volume atoms: ${cv_natoms}"
+
+# Heating parameters
+variable        start_temp equal 300.0
+variable        end_temp equal 3000.0
+variable        heat_rate equal 3.0    # K/ps
+variable        temp_increment equal ${heat_rate}*0.001*100  # temp increase per output
+variable        total_steps equal ((v_end_temp-v_start_temp)/v_heat_rate/0.001)
+
+print           "Heating simulation parameters:"
+print           "Temperature range: ${start_temp}K to ${end_temp}K"
+print           "Heating rate: ${heat_rate} K/ps"
+print           "Total steps: ${total_steps}"
+
+# Setup heating
+fix             heat all nvt temp ${start_temp} ${end_temp} 0.1
+
+# Output control volume data every 100 steps
+# Format: step, cv_natoms, cv_si_count, cv_o_count, cv_density, cv_temp, system_temp
+fix             cv_output all ave/time 1 1 100 v_cv_natoms v_cv_count_si v_cv_count_o v_cv_density c_cv_temp c_total_temp file control_volume.dat
+
+# Optional: trajectory for visualization (reduced frequency to save space)
+dump            traj all atom 2000 heating.lammpstrj
+
+# Run heating simulation
+print           "Starting heating simulation..."
+run             ${total_steps}
+
+# Post-heating equilibration at max temperature
+print           "Final equilibration at ${end_temp}K..."
+unfix           heat
+fix             final_equil all nvt temp ${end_temp} ${end_temp} 0.1
+run             10000
+unfix           final_equil
+
+# Final state information
+print           "Final control volume atoms: ${cv_natoms}"
+
+# Clean up
+unfix           cv_output
+undump          traj
+
+print           "Simulation completed successfully"
+print           "Analysis data saved to: control_volume.dat"
+print           "Trajectory saved to: heating.lammpstrj"
